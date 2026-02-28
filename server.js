@@ -9,8 +9,8 @@ app.use(express.json())
 const CLIENT_ID = process.env.SPOTIFY_CLIENT_ID
 const CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET
 const REDIRECT_URI =
-  process.env.NODE_ENV === 'production'
-    ? 'https://spotify-controller-t7kr.onrender.com/callback'
+  process.env.RENDER_EXTERNAL_URL
+    ? `${process.env.RENDER_EXTERNAL_URL}/callback`
     : 'http://127.0.0.1:3000/callback'
 
 let access_token = null
