@@ -19,10 +19,11 @@ console.log("REDIRECT_URI:", REDIRECT_URI)
 let access_token = null
 let refresh_token = process.env.SPOTIFY_REFRESH_TOKEN || null
 
-// 🔄 Refresh Access Token
+// ---------------- TOKEN REFRESH ----------------
+
 async function refreshAccessToken() {
   if (!refresh_token) {
-    throw new Error("No refresh token available. Please re-authenticate.")
+    throw new Error("No refresh token available.")
   }
 
   const response = await axios.post(
@@ -45,7 +46,31 @@ async function refreshAccessToken() {
   console.log("✅ Access token refreshed")
 }
 
-// 🔐 Login Route
+async function spotifyRequest(method, endpoint, data = null) {
+  try {
+    return await axios({
+      method,
+      url: `https://api.spotify.com/v1${endpoint}`,
+      data,
+      headers: { Authorization: `Bearer ${access_token}` }
+    })
+  } catch (error) {
+    if (error.response?.status === 401) {
+      console.log("🔄 Token expired, refreshing...")
+      await refreshAccessToken()
+      return await axios({
+        method,
+        url: `https://api.spotify.com/v1${endpoint}`,
+        data,
+        headers: { Authorization: `Bearer ${access_token}` }
+      })
+    }
+    throw error
+  }
+}
+
+// ---------------- AUTH ----------------
+
 app.get('/login', (req, res) => {
   const scope =
     'user-modify-playback-state user-read-playback-state user-read-currently-playing'
@@ -55,15 +80,13 @@ app.get('/login', (req, res) => {
       querystring.stringify({
         response_type: 'code',
         client_id: CLIENT_ID,
-        scope: scope,
+        scope,
         redirect_uri: REDIRECT_URI
       })
   )
 })
 
-// 🔑 Callback Route
 app.get('/callback', async (req, res) => {
-console.log("🔥 CALLBACK HIT")
   try {
     const code = req.query.code
 
@@ -71,7 +94,7 @@ console.log("🔥 CALLBACK HIT")
       'https://accounts.spotify.com/api/token',
       querystring.stringify({
         grant_type: 'authorization_code',
-        code: code,
+        code,
         redirect_uri: REDIRECT_URI
       }),
       {
@@ -87,18 +110,63 @@ console.log("🔥 CALLBACK HIT")
     access_token = response.data.access_token
     refresh_token = response.data.refresh_token || refresh_token
 
-    console.log("🎉 NEW REFRESH TOKEN:", refresh_token)
-
-    res.send(
-      'Spotify connected! You can close this tab. (Copy refresh token from logs if first time)'
-    )
-  } catch (error) {
-    console.error("Callback error:", error.response?.data || error.message)
-    res.status(500).send("Authentication failed")
+    console.log("🎉 REFRESH TOKEN:", refresh_token)
+    res.send('Spotify connected!')
+  } catch (err) {
+    console.error(err.response?.data || err.message)
+    res.status(500).send("Auth failed")
   }
 })
 
-// 🎵 Play Route
+// ---------------- SMART SEARCH ----------------
+
+async function smartSearch(query) {
+  const lower = query.toLowerCase()
+
+  let searchQuery = query
+
+  // Detect album
+  if (lower.includes("from")) {
+    const parts = query.split("from")
+    const trackPart = parts[0].trim()
+    const albumPart = parts[1].trim()
+
+    searchQuery = `track:${trackPart} album:${albumPart}`
+  }
+
+  // Detect artist
+  if (lower.includes("by")) {
+    const parts = query.split("by")
+    const trackPart = parts[0].trim()
+    const artistPart = parts[1].trim()
+
+    searchQuery = `track:${trackPart} artist:${artistPart}`
+  }
+
+  const result = await spotifyRequest(
+    "get",
+    `/search?q=${encodeURIComponent(searchQuery)}&type=track&limit=5`
+  )
+
+  if (result.data.tracks.items.length > 0) {
+    return result.data.tracks.items[0].uri
+  }
+
+  // fallback to playlist search
+  const playlistResult = await spotifyRequest(
+    "get",
+    `/search?q=${encodeURIComponent(query)}&type=playlist&limit=1`
+  )
+
+  if (playlistResult.data.playlists.items.length > 0) {
+    return playlistResult.data.playlists.items[0].uri
+  }
+
+  return null
+}
+
+// ---------------- PLAY ----------------
+
 app.post('/play', async (req, res) => {
   try {
     const { query } = req.body
@@ -107,60 +175,59 @@ app.post('/play', async (req, res) => {
       await refreshAccessToken()
     }
 
-    const search = await axios.get(
-      'https://api.spotify.com/v1/search',
-      {
-        headers: { Authorization: `Bearer ${access_token}` },
-        params: { q: query, type: 'track,playlist', limit: 1 }
-      }
-    )
+    const uri = await smartSearch(query)
 
-    let uri = null
+    if (!uri) return res.status(404).send("Nothing found")
 
-    if (search.data.tracks.items.length > 0) {
-      uri = search.data.tracks.items[0].uri
-    } else if (search.data.playlists.items.length > 0) {
-      uri = search.data.playlists.items[0].uri
+    if (uri.includes("playlist")) {
+      await spotifyRequest("put", "/me/player/play", {
+        context_uri: uri
+      })
+    } else {
+      await spotifyRequest("put", "/me/player/play", {
+        uris: [uri]
+      })
     }
 
-    if (!uri) {
-      return res.status(404).send('Nothing found')
-    }
-
-    try {
-      await axios.put(
-        'https://api.spotify.com/v1/me/player/play',
-        uri.includes('playlist')
-          ? { context_uri: uri }
-          : { uris: [uri] },
-        {
-          headers: { Authorization: `Bearer ${access_token}` }
-        }
-      )
-    } catch (error) {
-      if (error.response && error.response.status === 401) {
-        console.log("🔄 Token expired. Refreshing...")
-        await refreshAccessToken()
-
-        await axios.put(
-          'https://api.spotify.com/v1/me/player/play',
-          uri.includes('playlist')
-            ? { context_uri: uri }
-            : { uris: [uri] },
-          {
-            headers: { Authorization: `Bearer ${access_token}` }
-          }
-        )
-      } else {
-        throw error
-      }
-    }
-
-    res.send('Playing now!')
-  } catch (error) {
-    console.error("Play error:", error.response?.data || error.message)
+    res.send("Playing")
+  } catch (err) {
+    console.error(err.response?.data || err.message)
     res.status(500).send("Playback failed")
   }
 })
 
-app.listen(3000, () => console.log('🚀 Server running on 3000'))
+// ---------------- CONTROLS ----------------
+
+app.post('/pause', async (req, res) => {
+  try {
+    await spotifyRequest("put", "/me/player/pause")
+    res.send("Paused")
+  } catch {
+    res.status(500).send("Pause failed")
+  }
+})
+
+app.post('/skip', async (req, res) => {
+  try {
+    await spotifyRequest("post", "/me/player/next")
+    res.send("Skipped")
+  } catch {
+    res.status(500).send("Skip failed")
+  }
+})
+
+app.post('/volume', async (req, res) => {
+  try {
+    const { level } = req.body
+    if (level < 0 || level > 100) {
+      return res.status(400).send("Volume must be 0-100")
+    }
+
+    await spotifyRequest("put", `/me/player/volume?volume_percent=${level}`)
+    res.send(`Volume set to ${level}%`)
+  } catch {
+    res.status(500).send("Volume failed")
+  }
+})
+
+app.listen(3000, () => console.log("🚀 Server running on 3000"))
