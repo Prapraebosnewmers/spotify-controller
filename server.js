@@ -68,7 +68,7 @@ async function spotifyRequest(method, endpoint, data = null) {
 
 app.get('/login', (req, res) => {
   const scope =
-    'user-modify-playback-state user-read-playback-state user-read-currently-playing'
+    'user-modify-playback-state user-read-playback-state user-read-currently-playing playlist-read-private playlist-read-collaborative'
 
   res.redirect(
     'https://accounts.spotify.com/authorize?' +
@@ -109,7 +109,28 @@ app.get('/callback', async (req, res) => {
   res.send("Spotify connected")
 })
 
-// ---------------- SMART PLAY ----------------
+// ---------------- PLAYLIST SEARCH (YOUR PLAYLISTS FIRST) ----------------
+
+async function searchUserPlaylistExact(name) {
+  const result = await spotifyRequest("get", "/me/playlists?limit=50")
+
+  const match = result.data.items.find(
+    p => p.name.toLowerCase() === name.toLowerCase()
+  )
+
+  return match ? match.uri : null
+}
+
+async function searchPublicPlaylist(query) {
+  const result = await spotifyRequest(
+    "get",
+    `/search?q=${encodeURIComponent(query)}&type=playlist&limit=5`
+  )
+
+  return result.data.playlists.items.length
+    ? result.data.playlists.items[0].uri
+    : null
+}
 
 async function searchTrack(query) {
   const result = await spotifyRequest(
@@ -117,25 +138,12 @@ async function searchTrack(query) {
     `/search?q=${encodeURIComponent(query)}&type=track&limit=5`
   )
 
-  if (result.data.tracks.items.length > 0) {
-    return result.data.tracks.items[0].uri
-  }
-
-  return null
+  return result.data.tracks.items.length
+    ? result.data.tracks.items[0].uri
+    : null
 }
 
-async function searchPlaylist(query) {
-  const result = await spotifyRequest(
-    "get",
-    `/search?q=${encodeURIComponent(query)}&type=playlist&limit=5`
-  )
-
-  if (result.data.playlists.items.length > 0) {
-    return result.data.playlists.items[0].uri
-  }
-
-  return null
-}
+// ---------------- PLAY ----------------
 
 app.post('/play', async (req, res) => {
   try {
@@ -145,51 +153,43 @@ app.post('/play', async (req, res) => {
       await refreshAccessToken()
     }
 
-    // If no query → resume
+    // Resume if no query
     if (!query || query.trim() === "") {
       await spotifyRequest("put", "/me/player/play")
       return res.send("Resumed")
     }
 
     const lower = query.toLowerCase()
-
     const wantsShuffle = !lower.includes("no shuffle")
 
-    // If user explicitly mentions playlist → search playlist first
-    if (lower.includes("playlist")) {
-      const playlistUri = await searchPlaylist(query)
-      if (!playlistUri) return res.status(404).send("Playlist not found")
-
+    // 1️⃣ Try exact match of YOUR playlists
+    const userPlaylist = await searchUserPlaylistExact(query)
+    if (userPlaylist) {
       await spotifyRequest("put", `/me/player/shuffle?state=${wantsShuffle}`)
       await spotifyRequest("put", "/me/player/play", {
-        context_uri: playlistUri
+        context_uri: userPlaylist
       })
+      return res.send("Your playlist playing")
+    }
 
+    // 2️⃣ Try public playlists
+    const publicPlaylist = await searchPublicPlaylist(query)
+    if (publicPlaylist) {
+      await spotifyRequest("put", `/me/player/shuffle?state=${wantsShuffle}`)
+      await spotifyRequest("put", "/me/player/play", {
+        context_uri: publicPlaylist
+      })
       return res.send("Playlist playing")
     }
 
-    // Otherwise try track first
+    // 3️⃣ Fallback to track
     const trackUri = await searchTrack(query)
-
     if (trackUri) {
       await spotifyRequest("put", "/me/player/shuffle?state=false")
       await spotifyRequest("put", "/me/player/play", {
         uris: [trackUri]
       })
-
       return res.send("Track playing")
-    }
-
-    // Fallback to playlist
-    const playlistUri = await searchPlaylist(query)
-
-    if (playlistUri) {
-      await spotifyRequest("put", `/me/player/shuffle?state=${wantsShuffle}`)
-      await spotifyRequest("put", "/me/player/play", {
-        context_uri: playlistUri
-      })
-
-      return res.send("Playlist playing")
     }
 
     res.status(404).send("Nothing found")
@@ -199,7 +199,7 @@ app.post('/play', async (req, res) => {
   }
 })
 
-// ---------------- RESUME ----------------
+// ---------------- CONTROLS ----------------
 
 app.post('/resume', async (req, res) => {
   try {
@@ -209,8 +209,6 @@ app.post('/resume', async (req, res) => {
     res.status(500).send("Resume failed")
   }
 })
-
-// ---------------- CONTROLS ----------------
 
 app.post('/pause', async (req, res) => {
   try {
