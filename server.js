@@ -63,6 +63,7 @@ app.get('/login', (req, res) => {
 
 // 🔑 Callback Route
 app.get('/callback', async (req, res) => {
+console.log("🔥 CALLBACK HIT")
   try {
     const code = req.query.code
 
