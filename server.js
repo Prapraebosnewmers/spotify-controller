@@ -13,6 +13,8 @@ const REDIRECT_URI =
     ? `${process.env.RENDER_EXTERNAL_URL}/callback`
     : 'http://127.0.0.1:3000/callback'
 
+console.log("REDIRECT_URI:", REDIRECT_URI)
+
 let access_token = null
 let refresh_token = null
 
