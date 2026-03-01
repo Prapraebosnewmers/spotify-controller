@@ -60,6 +60,7 @@ async function spotifyRequest(method, endpoint, data = null) {
         headers: { Authorization: `Bearer ${access_token}` }
       })
     }
+    console.error("SPOTIFY ERROR:", err.response?.data || err.message)
     throw err
   }
 }
@@ -74,7 +75,6 @@ async function ensureActiveDevice() {
   }
 
   const active = devices.data.devices.find(d => d.is_active)
-
   if (active) return active.id
 
   const firstDevice = devices.data.devices[0]
@@ -131,7 +131,7 @@ app.get('/callback', async (req, res) => {
   res.send("Spotify connected")
 })
 
-// ---------------- SEARCH HELPERS ----------------
+// ---------------- SEARCH ----------------
 
 async function searchUserPlaylistExact(name) {
   const result = await spotifyRequest("get", "/me/playlists?limit=50")
@@ -189,42 +189,63 @@ app.post('/play', async (req, res) => {
     // 1️⃣ Your playlists first
     const userPlaylist = await searchUserPlaylistExact(query)
     if (userPlaylist) {
-      await spotifyRequest("put", `/me/player/shuffle?state=${wantsShuffle}&device_id=${deviceId}`)
+      await spotifyRequest(
+        "put",
+        `/me/player/shuffle?state=${wantsShuffle}&device_id=${deviceId}`
+      )
+
       await spotifyRequest(
         "put",
         `/me/player/play?device_id=${deviceId}`,
         { context_uri: userPlaylist }
       )
+
       return res.send("Your playlist playing")
     }
 
     // 2️⃣ Public playlists
     const publicPlaylist = await searchPublicPlaylist(query)
     if (publicPlaylist) {
-      await spotifyRequest("put", `/me/player/shuffle?state=${wantsShuffle}&device_id=${deviceId}`)
+      await spotifyRequest(
+        "put",
+        `/me/player/shuffle?state=${wantsShuffle}&device_id=${deviceId}`
+      )
+
       await spotifyRequest(
         "put",
         `/me/player/play?device_id=${deviceId}`,
         { context_uri: publicPlaylist }
       )
+
       return res.send("Playlist playing")
     }
 
-    // 3️⃣ Track fallback
+    // 3️⃣ Track fallback (device primed first)
     const trackUri = await searchTrack(query)
     if (trackUri) {
-      await spotifyRequest("put", `/me/player/shuffle?state=false&device_id=${deviceId}`)
+      await spotifyRequest(
+        "put",
+        `/me/player/shuffle?state=false&device_id=${deviceId}`
+      )
+
+      // Prime playback context
+      await spotifyRequest(
+        "put",
+        `/me/player/play?device_id=${deviceId}`
+      )
+
       await spotifyRequest(
         "put",
         `/me/player/play?device_id=${deviceId}`,
         { uris: [trackUri] }
       )
+
       return res.send("Track playing")
     }
 
     res.status(404).send("Nothing found")
   } catch (err) {
-    console.error(err.response?.data || err.message)
+    console.error("PLAY ERROR:", err.response?.data || err.message)
     res.status(500).send("Playback failed")
   }
 })
